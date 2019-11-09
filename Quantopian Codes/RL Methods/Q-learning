@@ -1,0 +1,459 @@
+"""
+This is a template algorithm on Quantopian for you to adapt and fill in.
+"""
+from __future__ import print_function
+import quantopian.algorithm as algo
+import numpy as np
+import pandas as pd
+import itertools
+import random
+import math
+import talib
+from math import floor
+from collections import defaultdict
+from datetime import datetime
+from quantopian.pipeline import Pipeline
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.filters import QTradableStocksUS
+
+
+def initialize(context):
+    """
+    Called once at the start of the algorithm.
+    """
+    
+    # def q_learning(env, num_episodes, discount_factor=1.0, alpha=0.1, epsilon=0.01, Q=None):
+# HYPERPARAMETERS
+    #context.my_stock = sid(21774)
+    context.my_stock = sid(8045)
+    #context.my_stock = sid(22152)
+    context.discount_factor=0.99
+    context.alpha=0.1
+    context.epsilon=0.1
+    context.num_of_actions = 3
+    context.duration = 0
+    context.actionStates = ()
+    context.s = pd.Series()
+
+# Transfer learn by importing Q
+    context.Q = defaultdict(lambda: np.zeros(context.num_of_actions))
+    context.statecount = defaultdict(int)
+    context.actioncount = defaultdict(int)
+    context.rewardcount = defaultdict(int)
+    context.policy = make_epsilon_greedy_policy(context.Q, context.epsilon, context.num_of_actions)
+
+    context.state = 0#TODO1 Get the initial state
+    context.test = 0
+    context.previousmoney = context.portfolio.cash
+    context.purchasingpower = []
+    context.current_ema = 0
+    context.current_rsi = 0
+    context.curr_obv = 0
+    context.curr_bollinger = 0
+    context.curr_stoch = 0
+    context.curr_atr = 0 
+    
+    '''
+    # Rebalance every day, 1 hour after market open. minutely
+    algo.schedule_function(
+        rebalance,
+        algo.date_rules.every_day(),
+        algo.time_rules.market_open(minutes =1, hours=0)
+    )
+      # Rebalance every day, 1 hour after market open. hourly
+    algo.schedule_function(
+        rebalance,
+        algo.date_rules.every_day(),
+        algo.time_rules.market_open(minutes =0, hours=1)
+    )
+    '''
+    '''
+     # Rebalance every day, 1 hour after market open. daily
+    algo.schedule_function(
+        rebalance,
+        algo.date_rules.week_start(days_offset=1),
+        algo.time_rules.market_open(minutes =30, hours=0)
+    )
+    '''
+    '''
+    # MINUTELY
+    for i in range(12):
+        for j in range(1, 60):
+            algo.schedule_function(rebalance, algo.date_rules.every_day(),  algo.time_rules.market_open(minutes=j, hours=i))
+    '''
+    '''
+    # HOURLY
+    for i in range(12):
+        algo.schedule_function(rebalance, date_rules.every_day(), time_rules.market_open(minutes=1, hours=i))
+    '''
+    # DAILY
+    algo.schedule_function(rebalance, date_rules.every_day())
+
+    # Record tracking variables at the end of each day.
+    algo.schedule_function(
+        record_vars,
+        algo.date_rules.every_day(),
+        algo.time_rules.market_close(),
+    )
+
+    # Create our dynamic stock selector.
+    algo.attach_pipeline(make_pipeline(), 'pipeline')
+
+
+def make_pipeline():
+    """
+    A function to create our dynamic stock selector (pipeline). Documentation
+    on pipeline can be found here:
+    https://www.quantopian.com/help#pipeline-title
+    """
+
+    # Base universe set to the QTradableStocksUS
+    base_universe = QTradableStocksUS()
+
+    # Factor of yesterday's close price.
+    yesterday_close = USEquityPricing.close.latest
+
+    pipe = Pipeline(
+        columns={
+            'close': yesterday_close,
+        },
+        screen=base_universe
+    )
+    return pipe
+
+
+def before_trading_start(context, data):
+    """
+    Called every day before market open.
+    """
+    context.output = algo.pipeline_output('pipeline')
+
+    # These are the securities that we are interested in trading each day.
+    context.security_list = context.output.index
+
+
+def rebalance(context, data):
+    """
+    Execute orders according to our schedule_function() timing.
+    """
+   
+    context.duration = context.duration + 1
+    if(data.current(context.my_stock, ["price", "open", "volume", "high","low", "close",]).isnull().values.any()):
+        #print("null value")
+        #print(data.current(context.my_stock, ["price", "open", "volume", "high","low", "close",]))
+        pass
+    else:
+        #print("notnull value")
+        ### Get the Sigmoid to get the number of stocks to buy/sell ####
+        numstocks = sigmoid(context.duration) * context.portfolio.cash / data.current(context.my_stock,"price")
+        cur_purchasingpower = context.portfolio.cash / data.current(context.my_stock,"price")
+        context.purchasingpower.append(cur_purchasingpower)
+        if(len(context.purchasingpower) >= 10001):
+            context.purchasingpower.pop(0)
+        #############################  Mean Features ########################################
+        context.price_mean = np.mean(data.history(context.my_stock, "price", 10000, "1m"))
+        #print("\nMean:", context.price_mean)
+        context.openstock_mean = np.mean(data.history(context.my_stock, "open", 10000, "1m"))
+        context.volume_mean= np.mean(data.history(context.my_stock,"volume", 10000, "1m"))
+        context.high_mean= np.mean(data.history(context.my_stock,"high", 10000, "1m"))
+        context.low_mean = np.mean(data.history(context.my_stock,"low",10000, "1m"))
+        context.close_mean = np.mean(data.history(context.my_stock,"close",10000, "1m"))
+  
+        #############################  Standard Dev Features ########################################
+        context.price_std = np.std(data.history(context.my_stock, "price", 10000, "1m"))
+        #log.info(context.price_std)
+        context.openstock_std = np.std(data.history(context.my_stock, "open", 10000, "1m"))
+        context.volume_std= np.std(data.history(context.my_stock,"volume",10000, "1m"))
+        context.high_std= np.std(data.history(context.my_stock,"high", 10000, "1m"))
+        context.low_std = np.std(data.history(context.my_stock,"low", 10000, "1m"))
+        context.close_std = np.std(data.history(context.my_stock,"close",10000, "1m"))
+  
+         #####################(######## Discretization Per Feature ########################################
+        discretized_price = discretize(context.price_mean, context.price_std, data.current(context.my_stock, "price"))
+        discretized_open = discretize(context.openstock_mean, context.openstock_std, data.current(context.my_stock, "open"))
+        discretized_volume = discretize(context.volume_mean, context.volume_std, data.current(context.my_stock, "volume"))
+        discretized_high = discretize(context.high_mean, context.high_std, data.current(context.my_stock, "high"))
+        discretized_low = discretize(context.low_mean, context.low_std, data.current(context.my_stock, "low"))
+        discretized_close = discretize(context.close_mean, context.close_std, data.current(context.my_stock, "close"))
+
+        '''
+        print("\nSamples:", repr(samples), sep="\n")
+        print("\nDiscretized samples:", repr(discretized_samples), sep="\n")
+        print("\nState:", discretized_samples[0][1])
+        '''
+   
+        #Starting new tuple
+        newtuple = () #Insert Features Here Prices, Volume, High, Low and etc or trading indicators
+        newtuple = newtuple + (discretized_price,)
+        newtuple = newtuple + (discretized_open,)
+        newtuple = newtuple + (discretized_volume,)
+        newtuple = newtuple + (discretized_high,)
+        newtuple = newtuple + (discretized_low,)
+        newtuple = newtuple + (discretized_close,)
+        if(len(context.purchasingpower) >= 11):
+            purchase_mean = np.mean(context.purchasingpower)
+            purchase_std = np.std(context.purchasingpower)
+            discretized_purchase = discretize(purchase_mean, purchase_std, cur_purchasingpower)
+            newtuple = newtuple + (discretized_purchase,)
+        else:
+            newtuple = newtuple + (0,)
+            #print("\nState:", newtuple, sep="\n")
+        #order(context.my_stock, numstocks)
+        
+        context.current_ema = ema_vs_ema(context.my_stock, data)
+        context.curr_atr = atr(context.my_stock, data)
+        context.curr_stoch = stoch(context.my_stock, data)
+        context.curr_bollinger = bollinger_bands(context.my_stock, data)
+        obv(context.my_stock, context, data)
+        newtuple = newtuple + (context.current_ema[0],)
+        newtuple = newtuple + (context.current_ema[1],)
+        newtuple = newtuple + (rsi(context.my_stock, data),)
+        newtuple = newtuple + (context.curr_obv, )
+        newtuple = newtuple + (context.curr_atr[0],)
+        newtuple = newtuple + (context.curr_atr[1],)
+        newtuple = newtuple + (context.curr_stoch[0],)
+        newtuple = newtuple + (context.curr_stoch[1],)
+        newtuple = newtuple + (context.curr_bollinger[0],)
+        newtuple = newtuple + (context.curr_bollinger[1],)
+   
+        if(context.test == 0):
+            context.state = newtuple
+            context.test = 1
+        else:
+            action_probs = context.policy(context.state) #return the action probabilities
+            action = np.random.choice(np.arange(len(action_probs)), p=action_probs)
+#         action_space = (0, do nothing), (1, buy), (2, sell)
+            if action == 0:
+                pass
+            if action == 1:
+#             TODO3 buy
+                order(context.my_stock, numstocks)
+            if action == 2:
+#             TODO4 sell:
+                order(context.my_stock, -numstocks)
+
+            # based from the action you did:
+            next_state = newtuple#TODO5 get next state/stock data
+            #print("\nCurr Money", context.portfolio.cash, sep="\n")
+            #print("\nPrev Money", context.previousmoney, sep="\n")
+            #reward = context.portfolio.cash - context.previousmoney #TODO6 compute rewards Profit
+            reward = get_sharpe_ratio(context, data, numstocks) #rewards Sharpe Rati
+            #reward = get_networth(context, data, numstocks)
+            #reward = get_total_returns(context, data)
+            #print("\n Datetime", datetime.timestamp(get_datetime()))
+            # done = #TODO7 make this true if its on the end of the simulation
+
+    # TD Update
+            best_next_action = np.argmax(context.Q[next_state])    
+            td_target = reward + context.discount_factor * context.Q[next_state][best_next_action]
+            td_delta = td_target - context.Q[context.state][action]
+            context.Q[context.state][action] += context.alpha * td_delta
+  
+    # Tracking
+            context.statecount[context.state] += 1
+            context.actioncount[action] += 1
+            context.rewardcount[reward] += 1
+
+            context.state = next_state
+            context.previousmoney = context.portfolio.cash
+        
+        if(context.duration % 1000 == 1):
+            print("\Action Count", context.actioncount,  sep="\n")
+        # Log something on LAST minute of last day  
+        '''
+        mode = get_environment('data_frequency')  
+        if mode == 'daily':  
+            if get_datetime().date() == get_environment('end').date():  
+                log.info('Last frame, daily')
+                print("\Action Count", context.actioncount,  sep="\n")
+        elif mode == 'minute':  
+            if get_datetime() == get_environment('end'):  
+                log.info('Last frame, minute')
+                print("\Action Count", context.actioncount,  sep="\n")
+        '''
+
+
+def record_vars(context, data):
+    """
+    Plot variables at the end of each day.
+    """
+    pass
+
+
+def handle_data(context, data):
+    """
+    Called every minute.
+    """
+    pass
+
+####### RL Function ######
+def make_epsilon_greedy_policy(Q, epsilon, nA):
+    def policy_fn(observation):
+        A = np.ones(nA, dtype=float) * epsilon / nA 
+        best_action = np.argmax(Q[observation])
+        if list(Q[observation]).count(Q[observation][0]) == len(Q[observation]):
+            best_action = np.random.choice(len(Q[observation]))
+        A[best_action] += (1.0 - epsilon)
+        return A
+    return policy_fn
+
+
+##### Sigmoid Function #######
+def sigmoid(x):
+  return 1 / (1 + math.exp(-x))
+
+def get_sharpe_ratio(context, data, numstocks):
+    close_data = data.history(context.my_stock,["close","price"], 100, "1d")
+    #print( close_data)
+    #dividend = close_data[0]
+    result = close_data
+    #print( result['close'])
+    #result = close_data
+    result['norm_price'] = result['close'] / result['close'][0]
+    result['Allocation'] = result['norm_price'] * 1.000000
+    result['Position'] = result['Allocation']* numstocks
+    result['Daily Return'] = result['Position'].pct_change(1)
+    Sharpe_Ratio = result['Daily Return'].mean() / result['Daily Return'].std()
+    #print( Sharpe_Ratio)
+    return Sharpe_Ratio
+
+def get_networth(context, data, numstock):
+    return context.portfolio.cash + (numstock * data.current(context.my_stock, "close"))
+
+def discretize(mean, std, val):
+    disc = 0
+    if val <= mean + std*0.5 and val >= mean - std*0.5:
+        disc = 0
+    elif val > mean + std*0.5 and val <= mean + std*1:
+        disc = 1
+    elif val > mean + std*1 and val <= mean + std*1.5:
+        disc = 2
+    elif val > mean + std*1.5 and val <= mean + std*2:
+        disc = 3
+    elif val > mean + std*2:
+        disc = 4
+    elif val < mean - std*0.5 and val >= mean - std*1:
+        disc = -1
+    elif val < mean - std*1 and val >= mean - std*1.5:
+        disc = -2
+    elif val < mean - std*1.5 and val >= mean - std*2:
+        disc = -3
+    elif val < mean - std*2:
+        disc = -4
+    else:
+        disc = 0
+    return disc
+
+
+def get_total_returns(context, data):
+    if(context.s.size <= 1):
+        return 0
+    else:
+        daily_returns = context.s.pct_change(fill_method ='bfill')
+        annual_returns = daily_returns.mean() * context.numtrades
+        return annual_returns
+    
+
+def atr(stock, data):
+    hist = data.history(stock, ['high', 'low', 'close'], 30, '1d')
+    atr = talib.ATR(hist['high'], hist['low'], hist['close'], timeperiod=14)[-1]
+
+    price = data.current(stock, 'price') # current stock price
+    prev_close = hist['close'][-2] # previous stock price
+
+    upside_signal = price - (prev_close + atr)
+    downside_signal = prev_close - (price + atr)
+
+    '''
+    ATR ALGORITHM
+    if upside_signal > 0: BUY
+    elif downside_signal > 0: SELL
+    '''
+
+    return [upside_signal, downside_signal]
+
+def stoch(stock, data):
+    hist = data.history(stock, ['high', 'low', 'close'], 30, '1d')
+    slowk, slowd = talib.STOCH(hist['high'], hist['low'], hist['close'], fastk_period=5, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
+
+    # get the most recent value
+    slowk = slowk[-1]
+    slowd = slowd[-1]
+
+    '''
+    if slowk < 10 or slowd < 10: BUY
+    elif slowk > 90 or slowd > 90: SELL
+    '''
+
+    return [slowk, slowd]
+
+def bollinger_bands(stock, data):
+    stock_series = data.history(stock, fields="price", bar_count=200, frequency='1d')
+    middle_band = stock_series.mean()
+    upper_band = middle_band + np.std(stock_series) * 2
+    lower_band = middle_band - np.std(stock_series) * 2
+
+    '''
+    BOLLINGER BANDS algorithm
+    if stock_series[-1] > upper_band: BUY
+    elif stock_series[-1] < lower_band: SELL
+    '''
+
+    return [upper_band, lower_band]
+
+def ema_vs_ema(stock, data):
+    stock_series = data.history(stock, fields="price", bar_count=200, frequency='1d')
+    long_ema = talib.EMA(stock_series[-(50):], timeperiod=50)
+    short_ema = talib.EMA(stock_series[-(20):], timeperiod=20)
+
+    '''
+    EMA vs EMA algorithm
+    if short_ema[-1] > long_ema[-1]: BUY
+    short_ema[-1] < long_ema[-1]: SELL
+    '''
+
+    return [long_ema[-1], short_ema[-1]]
+
+def rsi(stock, data):
+    period = 14
+    bar_count = 200
+    bar_interval = '1d'
+
+    # benchmark indicators in order to buy / sell
+    small = 30
+    large = 70
+
+    stock_series = data.history(stock, 'price', bar_count, bar_interval)
+    rsi_result = talib.RSI(stock_series, timeperiod=period)[-1]
+
+    '''
+    RSI algorithm
+    if rsi_result <= small: SELL
+    if rsi_result >= large: BUY
+    '''
+
+    return rsi_result
+
+def obv(stock, context, data):
+    # IMPORTANT: Please set context.curr_obv = 0 in the initialize()
+
+    period = 2 # getting the PREVIOUS and CURRENT status of the stock
+    bar_interval = '1d'
+    stock_series = data.history(stock, 'close', period, bar_interval)
+    volume_series = data.history(stock, 'volume', period, bar_interval)
+
+    curr_close = stock_series[-1]
+    prior_close = stock_series[0]
+    curr_volume = volume_series[-1]
+
+    if curr_close > prior_close:
+        context.curr_obv = context.curr_obv + curr_volume
+
+    elif curr_close < prior_close:
+        context.curr_obv = context.curr_obv - curr_volume
+
+    '''
+    OBV algorithm
+    if context.curr_obv <= stock_series[-1]: SELL
+    elif context.curr_obv >= stock_series[-1]: BUY
+    '''

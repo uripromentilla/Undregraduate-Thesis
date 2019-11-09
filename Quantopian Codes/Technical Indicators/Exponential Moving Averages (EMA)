@@ -1,0 +1,94 @@
+"""
+This is a template algorithm on Quantopian for you to adapt and fill in.
+"""
+import quantopian.algorithm as algo
+from quantopian.pipeline import Pipeline
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.filters import QTradableStocksUS
+import numpy as np
+
+import talib
+
+def initialize(context):
+    """
+    DO THIS FIRST!!! Configure values according to your experiements
+    """
+    # stocks = [sid(8229), sid(1595), sid(24465)] # TRAIN STOCKS
+    stocks = [sid(8045), sid(22152), sid(14848)] # TEST STOCKS #0
+    # stocks = [sid(21774), sid(16450), sid(17331)] # TEST STOCKS #1
+    context.time_rule = 2 # 0:MINUTELY - 1:HOURLY - 2:DAILY
+    context.stock_type = 0 # 0:UPTREND - 1:DOWNTREND - 2:OSCILLATING
+    
+    # AAPL, MSFT, and SPY
+    context.securities = [stocks[context.stock_type]]
+    context.long_ema_period = 50
+    context.short_ema_period = 20
+    context.bar_interval = '1d'
+    context.bar_count = 200
+    
+    
+    # MINUTELY
+    if(context.time_rule == 0):
+        for i in range(12):
+            for j in range(1, 60):
+                schedule_function(rebalance, date_rules.every_day(), time_rules.market_open(minutes=j, hours=i))
+    
+    # HOURLY
+    elif(context.time_rule == 1):
+        for i in range(12):
+            schedule_function(rebalance, date_rules.every_day(), time_rules.market_open(minutes=1, hours=i))
+    
+    # DAILY
+    elif(context.time_rule == 2):
+        schedule_function(rebalance, date_rules.every_day())
+            
+
+def rebalance(context, data):
+    ema_vs_ema(context, data)
+    
+def ema_vs_ema(context, data):    
+    stock_series = data.history(context.securities, fields="price", bar_count=context.bar_count, frequency=context.bar_interval)
+    
+    for s in context.securities:
+        np.std(stock_series[s])
+        stock_series.mean()
+        long_ema = talib.EMA(stock_series[s][-(context.long_ema_period):], timeperiod=context.long_ema_period)
+        short_ema = talib.EMA(stock_series[s][-(context.short_ema_period):], timeperiod=context.short_ema_period)
+        open_orders = get_open_orders()
+        
+        if short_ema[-1] > long_ema[-1]:
+            if s not in open_orders and is_wide(short_ema[-1], long_ema[-1]) >= 1:
+                order_target_percent(s, 1.0)
+                record(action_now = 1)
+                
+            else: record(action = 0)
+                
+        elif short_ema[-1] < long_ema[-1]:
+            if s not in open_orders and is_wide(short_ema[-1], long_ema[-1]) >= 1:
+                order_target_percent(s, -1.0)
+                record(action_now = 2)
+                
+            else: record(action = 0)
+    
+def ema_vs_closing(context, data):
+    period = 2
+    freq = "1m"
+    my_stock_series = data.history(context.securities, fields="price", bar_count=period, frequency=freq)
+    
+    for s in context.securities:
+        ema_result = talib.EMA(my_stock_series[s], timeperiod=period)[-1]
+        # curr_price = data.history(context.securities[s], "price", bar_count=1, frequency=freq)
+        curr_price = my_stock_series[s].iloc[-1]
+        open_orders = get_open_orders()
+
+        if curr_price > ema_result:
+            if s not in open_orders:
+                order_target_percent(s, 1.0)
+
+        elif curr_price < ema_result:
+            if s not in open_orders:
+                order_target_percent(s, -1.0)
+                
+def is_wide(line_1, line_2):
+    mouth = abs(line_1 - line_2)
+    return mouth

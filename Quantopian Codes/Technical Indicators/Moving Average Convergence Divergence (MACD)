@@ -1,0 +1,104 @@
+"""
+This is a template algorithm on Quantopian for you to adapt and fill in.
+"""
+import quantopian.algorithm as algo
+from quantopian.pipeline import Pipeline
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.filters import QTradableStocksUS
+
+import talib
+
+def initialize(context):
+    """
+    DO THIS FIRST!!! Configure values according to your experiements
+    """
+    # stocks = [sid(8229), sid(1595), sid(24465)] # TRAIN STOCKS
+    # stocks = [sid(8045), sid(22152), sid(14848)] # TEST STOCKS #0
+    stocks = [sid(21774), sid(16450), sid(17331)] # TEST STOCKS #1
+    context.time_rule = 2 # 0:MINUTELY - 1:HOURLY - 2:DAILY
+    context.stock_type = 0 # 0:UPTREND - 1:DOWNTREND - 2:OSCILLATING
+    
+    
+    context.securities = [stocks[context.stock_type]]
+    context.long_ema_period = 26
+    context.short_ema_period = 12
+    context.bar_interval = '1d'
+    context.bar_count = 200
+    context.pct_per_stock = 1.0 / len(context.securities)
+    
+    # MINUTELY
+    if(context.time_rule == 0):
+        for i in range(12):
+            for j in range(1, 60):
+                schedule_function(rebalance, date_rules.every_day(), time_rules.market_open(minutes=j, hours=i))
+    
+    # HOURLY
+    elif(context.time_rule == 1):
+        for i in range(12):
+            schedule_function(rebalance, date_rules.every_day(), time_rules.market_open(minutes=1, hours=i))
+    
+    # DAILY
+    elif(context.time_rule == 2):
+        schedule_function(rebalance, date_rules.every_day())
+        
+
+def rebalance(context, data):
+    macd_vs_zero(context, data)
+    
+def macd_vs_signal(context, data):    
+    stock_series = data.history(context.securities, fields="close", bar_count=context.bar_count, frequency=context.bar_interval)
+    
+    for s in context.securities:
+        """
+        ema26 = talib.EMA(stock_series[s], timeperiod=context.long_ema_period)
+        ema12 = talib.EMA(stock_series[s], timeperiod=context.short_ema_period)
+        macd = ema12 - ema26
+        signal = talib.EMA(macd, 9)
+        """
+        
+        
+        
+        open_orders = get_open_orders()
+        if macd[-1] < signal[-1]:
+            print("BUYING")        
+            print("MACD Value:", macd[-1])
+            print("Signal Value:", signal[-1])
+            print()
+            if s not in open_orders:
+                order_target_percent(s, 1)
+        
+        elif macd[-1] > signal[-1]:
+            print("SELLING")        
+            print("MACD Value:", macd[-1])
+            print("Signal Value:", signal[-1])
+            print()
+            if s not in open_orders:
+                order_target_percent(s, -1.0)
+                
+def macd_vs_zero(context, data):
+    stock_series = data.history(context.securities, fields="close", bar_count=context.bar_count, frequency=context.bar_interval)
+    
+    macd = stock_series.apply(MACD, fastperiod=12, slowperiod=26, signalperiod=9)
+    
+    for s in context.securities:
+        current_position = context.portfolio.positions[s].amount
+        
+        if macd[s] < 0 and current_position > 0:
+            order_target(s, 0)
+            record(action_now = 2)
+            
+            
+        
+        elif macd[s] > 0 and current_position == 0:
+            order_target_percent(s, context.pct_per_stock)
+            record(action_now = 1)
+            
+            else: record(action_now = 0)
+    
+def MACD(stock_series, fastperiod=12, slowperiod=26, signalperiod=9):
+    macd, signal, hist = talib.MACD(stock_series, fastperiod=fastperiod, slowperiod=slowperiod, signalperiod=signalperiod)
+    return macd[-1] - signal[-1]
+
+def is_wide(line_1, line_2):
+    mouth = abs(line_1 - line_2)
+    return mouth
